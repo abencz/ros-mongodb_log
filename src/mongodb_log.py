@@ -38,6 +38,7 @@ import sys
 import time
 import pprint
 import string
+import signal
 import subprocess
 from threading import Thread, Timer
 from multiprocessing import Process, Lock, Condition, Queue, Value, current_process, Event
@@ -142,6 +143,10 @@ class WorkerProcess(object):
         self.collection.count()
 
         self.queue.cancel_join_thread()
+
+        # clear signal handlers in this child process, rospy will handle signals for us
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
 
         rospy.init_node(WORKER_NODE_NAME % (self.nodename_prefix, self.id, self.collname),
                         anonymous=False)
@@ -370,7 +375,6 @@ class MongoWriter(object):
             print("All topics")
             self.ros_master = rosgraph.masterapi.Master(NODE_NAME_TEMPLATE % self.nodename_prefix)
             self.update_topics(restart=False)
-        rospy.init_node(NODE_NAME_TEMPLATE % self.nodename_prefix, anonymous=True)
 
         self.start_all_topics_timer()
 
@@ -460,7 +464,7 @@ class MongoWriter(object):
         self.graph_thread.daemon = True
         self.graph_thread.start()
 
-        while not rospy.is_shutdown() and not self.quit:
+        while not self.quit:
             started = datetime.now()
 
             if self.graph_daemon and self.graph_process.poll() != None:
@@ -472,7 +476,7 @@ class MongoWriter(object):
             # the following code makes sure we run once per STATS_LOOPTIME, taking
             # varying run-times and interrupted sleeps into account
             td = datetime.now() - started
-            while not rospy.is_shutdown() and not self.quit and td < looping_threshold:
+            while not self.quit and td < looping_threshold:
                 sleeptime = STATS_LOOPTIME - (td.microseconds + (td.seconds + td.days * 24 * 3600) * 10**6) / 10**6
                 if sleeptime > 0: sleep(sleeptime)
                 td = datetime.now() - started
@@ -566,7 +570,7 @@ class MongoWriter(object):
         graphing_threshold = timedelta(0, STATS_GRAPHTIME - STATS_GRAPHTIME*0.01, 0)
         first_run = True
 
-        while not rospy.is_shutdown() and not self.quit:
+        while not self.quit:
             started = datetime.now()
 
             if not first_run: self.graph_rrd()
@@ -575,7 +579,7 @@ class MongoWriter(object):
             # the following code makes sure we run once per STATS_LOOPTIME, taking
             # varying run-times and interrupted sleeps into account
             td = datetime.now() - started
-            while not rospy.is_shutdown() and not self.quit and td < graphing_threshold:
+            while not self.quit and td < graphing_threshold:
                 sleeptime = STATS_GRAPHTIME - (td.microseconds + (td.seconds + td.days * 24 * 3600) * 10**6) / 10**6
                 if sleeptime > 0: sleep(sleeptime)
                 td = datetime.now() - started
@@ -800,8 +804,13 @@ def main(argv):
                               no_specific=options.no_specific,
                               nodename_prefix=options.nodename_prefix)
 
+    def signal_handler(signal, frame):
+        mongowriter.shutdown()
+
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
+
     mongowriter.run()
-    mongowriter.shutdown()
 
 if __name__ == "__main__":
     main(sys.argv)
